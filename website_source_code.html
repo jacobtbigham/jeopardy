@@ -1,0 +1,751 @@
+<head>
+    <script src="https://npmcdn.com/parse/dist/parse.min.js"></script>
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.4.1/jquery.min.js"></script>
+
+    <script>
+        let questionGrid;
+        let categoryGrid;
+        let questions_played;
+        let currentAnswer;
+        let currentValue;
+        let score;
+        let daily_double_arr;
+        let daily_double;
+        let daily_double_clue;
+        let final_clue;
+        let final_correct;
+        let first_resize_complete;
+        let PULL_LIMIT;
+
+        function startupCode()
+        { 
+            turnQuestions("off");
+            Parse.initialize("XL2KdWtY6WMAOCWHHpIO0SwuDvv599VMNEna71NR","ak4sITrpFlhJXLVgRGsSR2Da913ILyHBjjNhQpzq");
+            Parse.serverURL = 'https://parseapi.back4app.com/';
+            PULL_LIMIT = 500;
+            questions_played = 0;
+            score = 0;
+            daily_double_arr = [11, 12, 13, 14, 15, 21, 22, 23, 24, 25, 31, 32, 33, 34, 35, 41, 42, 43, 44, 45, 51, 52, 53, 54, 55, 41, 42, 43, 44, 45, 51, 52, 53, 54, 55];
+            questionGrid = [];
+            categoryGrid = [];
+            document.getElementById ("playButton").addEventListener("click", processPlay);
+            document.getElementById("answerInput").addEventListener("keyup", function(event) {
+                if (event.keyCode === 13) {
+                    document.getElementById("answerButton").click();
+                }
+            });
+            document.getElementById("wagerInput").addEventListener("keyup", function(event) {
+                if (event.keyCode === 13) {
+                    document.getElementById("wagerButton").click();
+                }
+            });
+            document.getElementById("keywordInput").addEventListener("keyup", function(event) {
+                if (event.keyCode === 13) {
+                    document.getElementById("playButton").click();
+                }
+            });
+            first_resize_complete = false;
+            resize();
+            first_resize_complete = true;
+            window.addEventListener("resize", resize);
+            document.addEventListener("resize", resize);
+
+        }
+
+        function restart()
+        {
+            $("#big_wrapper").css("background", "linear-gradient(0deg, rgba(57,0,213,1) 0%, rgba(87,87,157,1) 31%, rgba(0,51,186,1) 100%)");
+            turnQuestions("off");
+            to_hide = ["question", "resetButton", "score_wrapper", "category", "answer", "correct_answer_box", "question_grid", "c1", "c2", "c3", "c4", "c5", "wager", "at_risk"];
+            for(i = 0; i < to_hide.length; i++)
+                document.getElementById(to_hide[i]).style.visibility="hidden";
+            document.getElementById("wager").style.display="none";
+            document.getElementById("at_risk").style.display="none";
+            document.getElementById("startup").style.visibility="visible";
+            document.getElementById("keepCategoriesBox").checked=false;
+            document.getElementById('exactMatchesBox').checked=false;
+            score = 0;
+            questions_played = 0;
+            document.getElementById("score_value").style.color="white";
+            document.getElementById("score_value").innerHTML=0;
+            document.getElementById("question").innerHTML="";
+            document.getElementById("correct_answer_box").innerHTML="";
+            document.getElementById("wagerInput").value = "Wager";
+            hideTable();
+        }
+
+        async function processPlay()
+        {
+            $("#load_box").css("display", "flex").hide().fadeIn();
+            document.getElementById("startup").style.visibility="hidden"; 
+            document.getElementById("categories").style.visibility="visible";
+            exact_matches = document.getElementById('exactMatchesBox').checked;
+            keep_cats = document.getElementById('keepCategoriesBox').checked;
+            keyword = document.getElementById("keywordInput").value.toUpperCase().trim();
+            document.getElementById("keywordInput").value = "";
+            if (exact_matches)
+                keyword = "\\W" + keyword + "\\W";
+            questionData = await getQuestionData(keyword, false, keep_cats);
+            final_clue = await getQuestionData(keyword, true, false);
+            if(questionData == 0 || final_clue == 0){
+                alert("Not enough questions are available for a Jeopardy game. Try using a different keyword or checking the Keep Categories box!");
+                document.getElementById("startup").style.visibility="visible";
+                $("#load_box").css("display", "flex").hide();
+                restart();
+            }
+            makeQuestionGrid(questionData, keep_cats);
+            var instructions = "CLICK ON A CLUE TO BEGIN!<BR>EXCEPT FOR THE DAILY DOUBLE, YOU CAN PASS ON ANY QUESTION BY CLICKING SUBMIT WITHOUT ENTERING AN ANSWER OR BY JUST CLICKING ANOTHER CLUE.<br>HAVE FUN!";
+            document.getElementById("question").innerHTML=instructions;
+            resize();
+            document.getElementById("big_wrapper").style.background = "#020c7f";
+            $("#load_box").hide();
+            var clue_vals = ['#11', '#12', '#13', '#14', '#15', '#21', '#22', '#23', '#24', '#25', '#31', '#32', '#33', '#34', '#35', '#41', '#42', '#43', '#44', '#45', '#51', '#52', '#53', '#54', '#55'];
+            shuffleArray(clue_vals);
+            for(let i = 0; i < 25; i++)
+                setTimeout(function(){ $(clue_vals[i]).css("visibility", "visible");}, 1000+ 125*i);
+            var cats = ['#c1', '#c2', '#c3', '#c4', '#c5'];
+            for(let j = 0; j < 5; j++)
+                setTimeout(function(){ $(cats[j]).css("visibility", "visible");}, 5125+ 1300*j); 
+            setTimeout(function(){ document.getElementById("resetButton").style.visibility="visible";}, 11625);
+            setTimeout(function(){ document.getElementById("score_wrapper").style.visibility="visible";}, 12625);
+            setTimeout(function(){ turnQuestions("on");}, 13625);
+            setTimeout(function(){ document.getElementById("question").style.visibility="visible"; }, 13625);
+        }
+
+        async function getQuestionData(keyword, final_jeopardy, keep_categories)
+        {
+            //returns a 5x5 array of aggs, grouped by category
+            //or if final_jeopardy, one random matching Final Jeopardy question
+            //returns 0 if not enough matches
+            //if keep_categories, if any category has fewer than 5 clues, then the missing clues are null (always in highest position)
+            if (!final_jeopardy) 
+            {
+                det = new Parse.Object.extend("Regular");
+                query = new Parse.Query(det);
+                query.limit(PULL_LIMIT);
+
+                if(keep_categories)
+                {
+                    query.include("category_id");
+                    query.matches("agg", keyword);
+                    category_ids = [];
+                    const x = await query.find();
+                    for (var i = 0; i < x.length; i++){
+                        if(!category_ids.includes(x[i].get("category_id")))
+                            category_ids.push(x[i].get("category_id"));
+                    }
+                    if(category_ids.length < 5) return 0;
+                    category_ids = getRandom(category_ids, 5);
+                    var questions = [];
+                    for(var i = 0; i < 5; i++){
+                        cat_aggs = [];
+                        cat_i = category_ids[i];
+                        query = new Parse.Query(det);
+                        query.include("agg");
+                        query.notEqualTo("category_id", 0);
+                        query.equalTo("category_id", cat_i);
+                        const y = await query.find();
+                        for (j = 0; j < y.length; j++)
+                            cat_aggs.push(y[j].get("agg"));
+                        if(y.length < 5){
+                            for(j = y.length; j < 5; j++)
+                                cat_aggs.push(null);
+                        }
+                        questions.push(cat_aggs);
+                    }
+                    return getRandom(questions, 5);
+                }
+                else
+                {//just fill up all possible clues
+                    query.include("agg");
+                    questions = [];
+                    query.matches("agg", keyword.toUpperCase());
+                    const x = await query.find();
+                    for (i = 0; i < x.length; i++)
+                        questions.push(x[i].get("agg"));
+                    if(questions.length < 25) return 0;
+                    shuffleArray(questions);
+                    category_like = [];
+                    for(i= 0; i < 5; i++){
+                        cat_i = [];
+                        for(j = 0; j< 5; j++)
+                            cat_i.push(questions.pop());
+                        category_like.push(cat_i);
+                    }
+                    return category_like;
+                }
+            }
+            else
+            { // Final Jeopardy
+                det = new Parse.Object.extend("Final");
+                query = new Parse.Query(det);
+                query.include("agg");
+                questions = [];
+                query.matches("agg", keyword.toUpperCase());
+                const x = await query.find();
+                for (i = 0; i < x.length; i++)
+                    questions.push(x[i].get("agg"));
+                if(questions.length < 1) return 0;
+                return getRandom(questions, 1)[0];
+            }
+        }
+
+        async function makeQuestionGrid(questionData, keep_category)
+        {
+            for(i = 0; i < 5; i++) questionGrid[i] = [];
+            for(cat = 0; cat < 5; cat++){
+                if(keep_category) categoryGrid[cat] = questionData[cat][0].split("|")[0];
+                else categoryGrid[cat] = "RANDOM " + (cat+1);
+                for(clue = 0; clue < 5; clue++){
+                    questionGrid[cat][clue] = questionData[cat][clue].split("|");
+                }
+            }
+            for(index = 0; index < 5; index++){
+                document.getElementById ("c" + (index+1)).innerHTML = categoryGrid[index];
+            }
+            daily_double = getRandom(daily_double_arr, 1)[0];
+            final_correct = false;
+            resizeCategories();
+        }
+
+        function showQuestion(position)
+        {
+            questions_played = questions_played + 1;
+            row = position[0]-1;
+            col = position[1]-1;
+            category = questionGrid[col][row][0];
+            document.getElementById("category").innerHTML = category;
+            resizeCategory();
+            document.getElementById("category").style.visibility = "visible";
+            document.getElementById("at_risk").style.color = "white";
+            document.getElementById((row+1) + "" + (col+1)).style.visibility="hidden";
+            if(("" + position[0] + "" + position[1]) == daily_double)
+                wagerPlay(row, col);
+            else{
+                currentValue = (row+1)*200;
+                clue = questionGrid[col][row][1];
+                currentAnswer = questionGrid[col][row][2];
+                document.getElementById("at_risk").innerHTML = currentValue;
+                document.getElementById("at_risk").style.display = "inline";
+                document.getElementById("at_risk").style.visibility = "visible";
+                document.getElementById("answer").style.visibility="hidden";
+                document.getElementById("answer").style.display="inline";
+                resizeAnswer();
+                document.getElementById("answer").style.visibility="visible";
+                document.getElementById("question").innerHTML = clue;
+                resizeQuestion();
+                document.getElementById("question").style.visibility= "visible";
+                document.getElementById("correct_answer_box").style.display = "none";
+            }
+        }
+
+        function wagerPlay(row, col)
+        {
+            document.getElementById("at_risk").style.display = "none";
+            document.getElementById("at_risk").style.visibility = "hidden";
+            document.getElementById("correct_answer_box").style.display = "none";
+            daily_double_clue = questionGrid[col][row][1];
+            currentAnswer = questionGrid[col][row][2];
+            document.getElementById("answer").style.display ="none";
+            document.getElementById("question").innerHTML = "DAILY DOUBLE!<br>MAKE YOUR WAGER BELOW.";
+            resizeQuestion();
+            document.getElementById("question").style.visibility="visible";
+            document.getElementById("wager").style.display = "inline";
+            document.getElementById("wager").style.visibility = "visible";
+            turnQuestions("off");
+        }
+
+        function processWager()
+        {
+            currentValue = document.getElementById("wagerInput").value.replace(/^0+/, '');
+            if(currentValue == "")
+                currentValue = 0;
+            if(questions_played < 26)
+            { //Daily Double, not Final
+                if(currentValue < 5)
+                    alert("Daily Double wager must be at least 5 points.");
+                else if(score < 1000 && currentValue > 1000)
+                    alert("Daily Double wager cannot exceed 1000 when your score is below 1000.");
+                else if(currentValue > score && score >= 1000)
+                    alert("Daily Double wager cannot exceed your current score (" + score + ").");
+                else{
+                    document.getElementById("at_risk").innerHTML = currentValue;
+                    document.getElementById("at_risk").style.display = "inline";
+                    document.getElementById("at_risk").style.visibility = "visible";
+                    document.getElementById("answer").style.visibility="hidden";
+                    document.getElementById("answer").style.display="inline";
+                    resizeAnswer();
+                    document.getElementById("answer").style.visibility="visible";
+                    document.getElementById("question").innerHTML = daily_double_clue;
+                    resizeQuestion();
+                    document.getElementById("question").style.visibility="visible";
+                    document.getElementById("correct_answer_box").style.display ="none";
+                    document.getElementById("wager").style.display = "none";
+                    document.getElementById("wagerInput").value = "Wager";
+                }
+            }
+            else
+            { //Final Jeopardy
+                if(currentValue < 0)
+                    alert("Final Jeopardy wager cannot be negative.");
+                else if(score < 2000 && currentValue > 2000)
+                    alert("Final Jeopardy wager cannot exceed 2000 when your score is below 2000.");
+                else if(currentValue > score && score >= 2000)
+                    alert("Final Jeopardy wager cannot exceed your current score (" + score + ").");
+                else{
+                    document.getElementById("at_risk").innerHTML = currentValue;
+                    document.getElementById("at_risk").style.display = "inline";
+                    document.getElementById("at_risk").style.visibility = "visible";
+                    document.getElementById("answer").style.visibility="hidden";
+                    document.getElementById("answer").style.display="inline";
+                    resizeAnswer();
+                    document.getElementById("answer").style.visibility="visible";
+                    document.getElementById("question").innerHTML = final_clue.split("|")[1];
+                    resizeQuestion();
+                    document.getElementById("question").style.visibility="visible";
+                    document.getElementById("correct_answer_box").style.display ="none";
+                    document.getElementById("wager").style.display = "none";
+                }
+            }
+        }
+
+        function turnQuestions(on_off)
+        {
+            condition = (on_off == "off");
+            for(row = 1; row <= 5; row++)
+                for(col = 1; col <= 5; col++)
+                    document.getElementById("" + row + "" + col).disabled = condition;
+        }
+
+        function setUpFinal()
+        {
+            questions_played = questions_played + 1;
+            category = final_clue.split("|")[0];
+            currentAnswer = final_clue.split("|")[2]
+            document.getElementById("category").innerHTML = category;
+            resizeCategory();
+            document.getElementById("category").style.visibility = "visible";
+            document.getElementById("question").innerHTML = "Final Jeopardy!<br>Make your wager below.";
+            document.getElementById("question").style.visibility="visible";
+            document.getElementById("wager").style.display = "inline";
+            document.getElementById("wager").style.visibility = "visible";
+            document.getElementById("answer").style.display ="none";
+            document.getElementById("at_risk").style.color = "white";
+            document.getElementById("at_risk").style.display ="none";
+            document.getElementById("correct_answer_box").style.display = "none";
+        }
+
+        function checkAnswer()
+        {
+            document.getElementById("question").style.visibility="hidden";
+            document.getElementById("category").style.visibility = "hidden";
+            document.getElementById("answer").style.display="none";
+            document.getElementById("at_risk").style.color = "white";
+            document.getElementById("correct_answer_box").innerHTML = currentAnswer;
+            document.getElementById("correct_answer_box").style.visibility="hidden";
+            document.getElementById("correct_answer_box").style.display="block";
+            resizeCorrectAnswer();
+            answer_input = document.getElementById("answerInput").value.toUpperCase();
+            document.getElementById("answerInput").value="";
+            if(answer_input.length == 0){
+                if(daily_double_clue != null || questions_played == 26){
+                    adjustScore(-1*currentValue)
+                    daily_double_clue = null;
+                    if(currentValue != 0){
+                        document.getElementById("at_risk").style.color = "red";
+                        document.getElementById("at_risk").innerHTML = "-" + currentValue;
+                    }
+                    else
+                        document.getElementById("at_risk").innerHTML = "0";
+                }
+                else
+                {
+                    adjustScore(0);
+                    document.getElementById("at_risk").style.color = "white";
+                }
+                document.getElementById("correct_answer_box").style.color="white";
+            }
+            else{
+                answer_input = removeStops(answer_input);
+                currentAnswer = removeStops(currentAnswer);
+                if(answer_input == currentAnswer || ld(answer_input, currentAnswer) <= Math.max(0.2*(currentAnswer.length),1) || currentAnswer.endsWith(answer_input)){
+                    adjustScore(currentValue);
+                    document.getElementById("correct_answer_box").style.color="green";
+                    if(questions_played == 26)
+                        final_correct = true;
+                    document.getElementById("at_risk").style.color = "green";
+                    document.getElementById("at_risk").innerHTML = "+" + currentValue;
+                }
+                else{
+                    adjustScore(-1*currentValue);
+                    if(currentValue != 0)
+                        document.getElementById("at_risk").style.color = "red";
+                    document.getElementById("at_risk").innerHTML = "-" + currentValue;
+                    document.getElementById("correct_answer_box").style.color="red";
+                }
+            }
+            document.getElementById("correct_answer_box").style.visibility="visible";
+            daily_double_clue = null;
+            if(questions_played == 25) //last regular Jeopardy answer submitted
+                setTimeout(setUpFinal, 2000);
+            if(questions_played == 26){ //Final Jeopardy answer submitted
+                if(final_correct)
+                    finalText = getRandom(["GREAT JOB!", "NICE GOING!", "YOU GOT IT!", "NAILED IT!", "THAT'S IT!", "YOU KNEW IT!", "CORRECT!"],1)[0] + "<br>";
+                else{
+                    finalText = getRandom(["NOT QUITE!", "BETTER LUCK NEXT TIME!", "AWW, INCORRECT!", "MAYBE IT WAS YOUR SECOND GUESS?"],1)[0];
+                    if(score > 0)
+                        finalText = finalText + " BUT YOUR SCORE IS STILL IN THE GREEN!";
+                    finalText = finalText + "<br>";
+                }
+                if(score > 1000){
+                    finalText = finalText + "SHARE YOUR SCORE TO SOCIAL MEDIA TO CHALLENGE YOUR FRIENDS! ";
+                }
+                finalText = finalText + "PRESS NEW GAME TO PLAY AGAIN.";
+                document.getElementById("question").innerHTML = finalText;
+                document.getElementById("question").style.visibility="visible";
+            }
+            turnQuestions("on");
+        }
+
+        function adjustScore(increment)
+        {
+            score = score + parseInt(increment);
+            document.getElementById ("score_value").innerHTML = score;
+            if(score > 0)
+                document.getElementById("score_value").style.color="green";
+            else if(score < 0)
+                document.getElementById("score_value").style.color="red";
+            else
+                document.getElementById("score_value").style.color="white";
+        }
+
+        function hideTable()
+        {
+            for(row = 1; row <= 5; row++)
+                for(col = 1; col <= 5; col++)
+                    document.getElementById("" + row + "" + col).style.visibility="hidden";
+        }
+
+        //resizing functions to adjust/fit screens
+        function resize()
+        {
+           $("#block-yui_3_17_2_1_1588895835416_3508").css("position", "absolute");
+            var w = 0.9*$(window).width();
+            var h = 0.9*$(window).height();
+            if(h > w){
+                alert("Please place your device in landscape mode or maximize the window to play Custom Jeopardy!");
+                document.getElementById("turnScreen").style.display = "inline";
+            }
+            else
+                document.getElementById("turnScreen").style.display = "none";
+            resizeTiles(w, h);
+            resizeAnswer();
+            resizeCategory();
+            resizeQuestion();
+            if(first_resize_complete)
+            {
+                resizeCategories(w,h);
+                resizeCorrectAnswer();
+            }
+            resizeStartup(w, h);
+            document.getElementById("resetButton").style.fontSize = h*0.02 + "px";
+            document.getElementById("at_risk").style.fontSize = h*0.065 + "px";
+            document.getElementById("score_wrapper").style.fontSize = h*0.075 + "px";
+            document.getElementById("wagerInput").style.fontSize = 0.3 * 0.175 * h + "px";
+            document.getElementById("wagerButton").style.fontSize = 0.3 * 0.175 * h + "px";
+            $("#block-yui_3_17_2_1_1588895835416_3508").css("position", "fixed");
+
+        }
+        
+        function resizeStartup(width, height){
+            var w = width;
+            var h = height;
+            var logo = document.getElementById("logo");
+            var key = document.getElementById("keywordInput");
+            var play = document.getElementById("playButton");
+            logo.style.fontSize = "5px";
+            logo.style.overflow = "scroll";
+            while(parseInt($("#logo").prop('scrollWidth')) <= parseInt(document.getElementById("logo").clientWidth) && parseFloat($("#logo").css('font-size')) <= 0.2*h)
+                logo.style.fontSize = (parseInt($("#logo").css('font-size'))+3) + "px";
+            logo.style.fontSize = (parseInt($("#logo").css('font-size'))*0.75) + "px";
+            logo.style.overflow = "hidden";
+            
+            var startup = document.getElementById("startup");
+            startup.style.fontSize = "5px";
+            key.style.fontSize = "5px";
+            play.style.fontSize = "5px";
+            startup.style.overflow = "scroll";
+            while(parseInt($("#startup").prop('scrollHeight')) <= parseInt(document.getElementById("startup").clientHeight) && parseFloat($("#startup").css('font-size')) <= 0.1*h){
+                startup.style.fontSize = (parseInt($("#startup").css('font-size'))+3) + "px";
+                play.style.fontSize = (parseInt($("#startup").css('font-size'))+3) + "px";
+                key.style.fontSize = (parseInt($("#startup").css('font-size'))+3) + "px";
+            }
+            startup.style.fontSize = (parseInt($("#startup").css('font-size'))-3) + "px";
+            startup.style.overflow = "hidden";
+        }
+
+        function resizeQuestion()
+        {
+            if ($("#question").text() == "") return;
+            var w = 0.9*$(window).width();
+            var h = 0.9*$(window).height();
+            var question = document.getElementById("question");
+            question.style.fontSize = "5px";
+            question.style.overflow = "scroll";
+            while(parseInt($("#question").prop('scrollHeight')) <= parseInt(document.getElementById("question").clientHeight) && parseFloat($("#question").css('font-size')) <= 0.05*h)
+                question.style.fontSize = (parseInt($("#question").css('font-size'))+3) + "px";
+            question.style.fontSize = (parseInt($("#question").css('font-size'))-3) + "px";
+            question.style.overflow = "visible";
+        }
+
+        function resizeCategory()
+        {
+            if ($("#category").text() == "") return;
+            var w = 0.9*$(window).width();
+            var h = 0.9*$(window).height();
+            var category = document.getElementById("category");
+            category.style.fontSize = "5px";
+            while(parseFloat($("#category").width()) <= 0.36*w && parseFloat($("#category").css('font-size')) <= 0.7*0.10*h){
+                category.style.fontSize = (parseInt($("#category").css('font-size'))+3) + "px";
+            }
+            category.style.fontSize = (parseInt($("#category").css('font-size'))*0.85) + "px";
+        }
+
+        function resizeAnswer()
+        {
+            var h = $("#big_wrapper").height();
+            document.getElementById("answerInput").style.fontSize = 0.3 * 0.175 * h + "px";
+            document.getElementById("answerButton").style.fontSize = 0.3 * 0.175 * h + "px";
+            return;
+        }
+
+        function resizeCorrectAnswer()
+        {
+            var w = 0.9*$(window).width();
+            var h = 0.9*$(window).height();
+            var answer = document.getElementById("correct_answer_box");
+            if ($("#correct_answer_box").text() == "") return;
+            answer.style.fontSize = "5px";
+            while($("#correct_answer_box").width() <= 0.36*w && $("#correct_answer_box").height() <= 0.175*h && parseFloat($("#correct_answer_box").css('font-size')) <= 0.5*0.175*h)
+                answer.style.fontSize = (parseInt($("#correct_answer_box").css('font-size'))+3) + "px";
+            answer.style.fontSize = (parseInt($("#correct_answer_box").css('font-size'))-3) + "px";
+        }
+
+        function resizeCategories(width, height)
+        {
+            w = width;
+            h = height;
+            var tile_list = document.querySelectorAll(".c_button");
+            for (i = 0; i < tile_list.length; i++){
+                tile_list[i].style.width = "auto";
+                tile_list[i].style.height = "auto";
+            }
+            cats = ["#c1", "#c2", "#c3", "#c4", "#c5"];
+            for(i = 0; i < 5; i++){
+                tile = $(cats[i]);
+                while (tile.width() >= 0.1 * w || tile.height() >= h * 0.14){
+                    tile.css("font-size", (parseInt($(tile).css('font-size')) - 3) + "px");
+                }
+                while (tile.height() < h * 0.14){
+                    tile.css("font-size", (parseInt($(tile).css('font-size')) + 3) + "px");
+                }
+                while (tile.width() > w * 0.12){
+                    tile.css("font-size", (parseInt($(tile).css('font-size')) - 3) + "px");
+                }
+                while (tile.height() > h * 0.165){
+                    tile.css("font-size", (parseInt($(tile).css('font-size')) - 3) + "px");
+                }
+                tile.css("font-size", (0.8 * parseInt($(tile).css('font-size'))) + "px");
+                $(tile).css("width", w * 0.1118 + "px");
+                $(tile).css("height", h * 0.166 + "px");
+            }
+        }
+
+        function resizeTiles(width, height)
+        {
+            w = width;
+            h = height;
+            var tile_list = document.querySelectorAll(".j_button");
+            for (i = 0; i < tile_list.length; i++){
+                tile_list[i].style.width = "auto";
+                tile_list[i].style.height = "auto";
+            }
+            tile = document.getElementById("51");
+            if (tile.clientWidth >= 0.1 * w | tile.clientHeight >= h * 0.14)
+                while (tile.clientWidth >= 0.1 * w | tile.clientHeight >= h * 0.14)
+                    document.getElementById("51").style.fontSize = (parseInt($("#51").css('font-size')) - 3) + "px";
+            if (tile.clientWidth <= 0.1 * w & tile.clientHeight <= h * 0.14)
+                while (tile.clientWidth <= 0.1 * w & tile.clientHeight <= h * 0.14)
+                    document.getElementById("51").style.fontSize = (parseInt($("#51").css('font-size')) + 3) + "px";
+            tile_width = tile.clientWidth;
+            new_font_size = parseInt($("#51").css('font-size')) + "px";
+            for (i = 0; i < tile_list.length; i++){
+                tile_list[i].style.fontSize = new_font_size;
+                tile_list[i].style.width = parseInt(w*0.12) + "px";
+                tile_list[i].style.height = parseInt(h*0.16666) + "px";
+            }
+        }
+
+        //auxiliary functions
+        function removeStops(text){
+            text = " " + text;
+            stopwords = [" THE ", " A ", " ONE ", " TWO ", " THREE ", " FOUR ", " FIVE ", " SIX ", " SEVEN ", " EIGHT ", " NINE ", " TEN ",
+                         ".", "$", "'"]
+            for (index = 0; index < stopwords.length; index++)
+                if((text + " ") != stopwords[index])
+                    text = text.replace(stopwords[index], "");
+            if (text.charAt(0) == " ")
+                text = text.substring(1);
+            return text;
+        }
+
+        function ld(src, tgt) {
+            //Levenshtein distance between strings src and tgt
+            var realCost;
+
+            var srcLength = src.length,
+                tgtLength = tgt.length,
+                tempString, tempLength; // for swapping
+
+            var resultMatrix = new Array();
+            resultMatrix[0] = new Array(); // Multi dimensional
+
+            // To limit the space in minimum of source and target,
+            // we make sure that srcLength is greater than tgtLength
+            if (srcLength < tgtLength) {
+                tempString = src; src = tgt; tgt = tempString;
+                tempLength = srcLength; srcLength = tgtLength; tgtLength = tempLength;
+            }
+
+            for (var c = 0; c < tgtLength+1; c++) {
+                resultMatrix[0][c] = c;
+            }
+
+            for (var i = 1; i < srcLength+1; i++) {
+                resultMatrix[i] = [];
+                resultMatrix[i][0] = i;
+                for (var j = 1; j < tgtLength+1; j++) {
+                    realCost = (src.charAt(i-1) == tgt.charAt(j-1))? 0: 1;
+                    resultMatrix[i][j] = Math.min(
+                        resultMatrix[i-1][j]+1,
+                        resultMatrix[i][j-1]+1,
+                        resultMatrix[i-1][j-1] + realCost // same logic as our previous example.
+                    ); 
+                }
+            }
+
+            return resultMatrix[srcLength][tgtLength];
+        }
+
+        function getRandom(arr, n) {
+            var result = new Array(n),
+                len = arr.length,
+                taken = new Array(len);
+            while (n--) {
+                var x = Math.floor(Math.random() * len);
+                result[n] = arr[x in taken ? taken[x] : x];
+                taken[x] = --len in taken ? taken[len] : len;
+            }
+            return result;
+        }
+
+        function shuffleArray(array) {
+            for (let i = array.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [array[i], array[j]] = [array[j], array[i]];
+            }
+        }
+    </script>
+</head>
+
+
+
+<body onload = "startupCode()">
+    <center>
+        <table id = "big_wrapper">
+            <tr>
+                <td id="left_wrapper">
+                    <table id = "question_grid" style="visibility:hidden">
+                        <tr id = "categories" style="visibility:parent">
+                            <td style="visibility:hidden"><button id = "c1" class="c_button" disabled>Category</button></td>
+                            <td style="visibility:hidden"><button id = "c2" class="c_button" disabled>Category</button></td>
+                            <td style="visibility:hidden"><button id = "c3" class="c_button" disabled>Category</button></td>
+                            <td style="visibility:hidden"><button id = "c4" class="c_button" disabled>Category</button></td>
+                            <td style="visibility:hidden"><button id = "c5" class="c_button" disabled>Category</button></td>
+                        </tr>
+                        <tr id = "row1">
+                            <td><button id="11" class="j_button" onclick="showQuestion([1,1])"><span class="grad">$200</span></button></td>
+                            <td><button id="12" class="j_button" onclick="showQuestion([1,2])"><span class="grad">$200</span></button></td>
+                            <td><button id="13" class="j_button" onclick="showQuestion([1,3])"><span class="grad">$200</span></button></td>
+                            <td><button id="14" class="j_button" onclick="showQuestion([1,4])"><span class="grad">$200</span></button></td>
+                            <td><button id="15" class="j_button" onclick="showQuestion([1,5])"><span class="grad">$200</span></button></td>
+                        </tr>
+                        <tr id = "row2">
+                            <td><button id="21" class="j_button" onclick="showQuestion([2,1])"><span class="grad">$400</span></button></td>
+                            <td><button id="22" class="j_button" onclick="showQuestion([2,2])"><span class="grad">$400</span></button></td>
+                            <td><button id="23" class="j_button" onclick="showQuestion([2,3])"><span class="grad">$400</span></button></td>
+                            <td><button id="24" class="j_button" onclick="showQuestion([2,4])"><span class="grad">$400</span></button></td>
+                            <td><button id="25" class="j_button" onclick="showQuestion([2,5])"><span class="grad">$400</span></button></td>
+                        </tr>
+                        <tr id = "row3">
+                            <td><button id="31" class="j_button" onclick="showQuestion([3,1])"><span class="grad">$600</span></button></td>
+                            <td><button id="32" class="j_button" onclick="showQuestion([3,2])"><span class="grad">$600</span></button></td>
+                            <td><button id="33" class="j_button" onclick="showQuestion([3,3])"><span class="grad">$600</span></button></td>
+                            <td><button id="34" class="j_button" onclick="showQuestion([3,4])"><span class="grad">$600</span></button></td>
+                            <td><button id="35" class="j_button" onclick="showQuestion([3,5])"><span class="grad">$600</span></button></td>
+                        </tr>
+                        <tr id = "row4">
+                            <td><button id="41" class="j_button" onclick="showQuestion([4,1])"><span class="grad">$800</span></button></td>
+                            <td><button id="42" class="j_button" onclick="showQuestion([4,2])"><span class="grad">$800</span></button></td>
+                            <td><button id="43" class="j_button" onclick="showQuestion([4,3])"><span class="grad">$800</span></button></td>
+                            <td><button id="44" class="j_button" onclick="showQuestion([4,4])"><span class="grad">$800</span></button></td>
+                            <td><button id="45" class="j_button" onclick="showQuestion([4,5])"><span class="grad">$800</span></button></td>
+                        </tr>
+                        <tr id = "row5">
+                            <td><button id="51" class="j_button" onclick="showQuestion([5,1])"><span class="grad">$1000</span></button></td>
+                            <td><button id="52" class="j_button" onclick="showQuestion([5,2])"><span class="grad">$1000</span></button></td>
+                            <td><button id="53" class="j_button" onclick="showQuestion([5,3])"><span class="grad">$1000</span></button></td>
+                            <td><button id="54" class="j_button" onclick="showQuestion([5,4])"><span class="grad">$1000</span></button></td>
+                            <td><button id="55" class="j_button" onclick="showQuestion([5,5])"><span class="grad">$1000</span></button></td>
+                        </tr>
+                    </table>
+                </td>
+
+                <td id="right_wrapper">
+                    <div id="question_div">
+                        <div id = "category" style="visibility:hidden"></div>
+                        <div id = "question" style="visibility:hidden"></div>
+                    </div>
+                    <div id="answer_div">
+                        <div id="answer" style="visibility: hidden">
+                            <input type="text" id="answerInput" placeholder="Answer">
+                            <button id="answerButton" style="background-color:blue; color:white" onclick="checkAnswer()">Submit</button>
+                        </div>
+                        <div id = "correct_answer_box" style="visibility: hidden"></div>
+                    </div>
+                    <div id="value_div">
+                        <div id="wager" style="display: none">
+                            <input type="number" id="wagerInput" placeholder="Wager">
+                            <button id="wagerButton" onclick="processWager()">Submit</button>
+                        </div>
+                        <div id="at_risk" style="visibility: hidden">500</div>
+                    </div>
+                    <div id="score_div">
+                        <div id="score_wrapper" style="visibility: hidden">SCORE: <span id="score_value">0</span></div>
+                    </div>
+                </td>
+            </tr>
+        </table>
+        <div id="startup">
+            <div id="logo">CUSTOM JEOPARDY!</div><br>
+            <div id="info">Welcome to Custom Jeopardy, the online game that builds custom Jeopardy boards based on topics you choose! Enter a keyword or phrase below, and we'll search for all past Jeopardy clues that contain your input. For random clues, leave the keyword input blank. Check the Keep Categories box to preserve entire categories in which clues originally appeared, and check Exact Matches to only find clues that exactly match your keyword (e.g., so that "hat" would not match "that"). Have fun!</div><br>
+            <input type="checkbox" id="keepCategoriesBox">&nbsp;Keep Categories&nbsp;&nbsp;
+            <input type="checkbox" id="exactMatchesBox">&nbsp;Exact Matches<br>
+            <input type="text" id="keywordInput" placeholder="Keyword"><br><br>
+            <button id="playButton">PLAY</button>
+        </div>
+    </center>
+    <button id="resetButton" onclick="restart()" style="visibility:hidden">New Game</button>
+    <div id="turnScreen"> </div>
+    <div id="load_box"><div id="loading"> </div></div>
+</body>
